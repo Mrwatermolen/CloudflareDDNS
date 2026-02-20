@@ -172,7 +172,7 @@ auto CloudflareDDNS::updateDnsRecord(std::string_view new_ip)
   payload["ttl"] = record.value("ttl", 1);
   payload["proxied"] = record.value("proxied", false);
 
-  std::string path = std::format("/zones/{}/dns_records/{}", config_.zone_id,
+  std::string path = std::format("/client/v4/zones/{}/dns_records/{}", config_.zone_id,
                                  config_.dns_record_id);
   std::string body = payload.dump();
   {
