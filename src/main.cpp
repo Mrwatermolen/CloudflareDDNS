@@ -18,6 +18,8 @@ struct AppConfig {
   std::string miwifi_host;
   std::string miwifi_username;
   std::string miwifi_password;
+  std::string miwifi_key;
+  std::string miwifi_device_id;
   std::string cf_email;
   std::string cf_api_key;
   std::string cf_zone_id;
@@ -103,6 +105,18 @@ auto loadConfigFromFile(const std::filesystem::path& config_path)
     }
     config.miwifi_password = std::move(*password_res);
 
+    auto key_res = get_nested_string("MiWiFi", "key", false);
+    if (!key_res) {
+      return std::unexpected(key_res.error());
+    }
+    config.miwifi_key = std::move(*key_res);
+
+    auto device_id_res = get_nested_string("MiWiFi", "device_id", false);
+    if (!device_id_res) {
+      return std::unexpected(device_id_res.error());
+    }
+    config.miwifi_device_id = std::move(*device_id_res);
+
     auto email_res = get_nested_string("cloudflare", "email");
     if (!email_res) {
       return std::unexpected(email_res.error());
@@ -187,7 +201,8 @@ auto main(int argc, char* argv[]) -> int {
   }
   const auto& config = *config_res;
 
-  auto miwifi = std::make_shared<cfd::MiWiFi>(config.miwifi_host);
+  auto miwifi = std::make_shared<cfd::MiWiFi>(
+      config.miwifi_host, config.miwifi_key, config.miwifi_device_id);
 
   cfd::CloudflareDDNS::Config cf_config{
       .email = config.cf_email,

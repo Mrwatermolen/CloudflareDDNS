@@ -97,8 +97,11 @@ static auto ensureSuccessStatus(const std::shared_ptr<HttpResponse>& res,
 //   return result;
 // }a
 
-MiWiFi::MiWiFi(std::string_view host)
-    : client_{std::make_unique<HttpClient>(std::string{host})} {
+MiWiFi::MiWiFi(std::string_view host, std::string_view key,
+               std::string_view device_id)
+    : client_{std::make_unique<HttpClient>(std::string{host})},
+      key_{key},
+      device_id_{device_id} {
   LOG_DEBUG(std::format("Init MiWiFi client: {}", host));
 }
 
@@ -227,6 +230,17 @@ struct LoginContext {
 auto MiWiFi::login(std::string_view username, std::string_view password)
     -> std::expected<void, Error> {
   LOG_INFO(std::format("Login start: {}", username));
+  if (!key_.empty() && !device_id_.empty()) {
+    LOG_DEBUG("Use key/device_id from config, skip web content fetch");
+    const auto nonce = generateNonce(device_id_);
+    const auto pwd_hash = hashPassword(password, key_, nonce);
+    return requestToken(username, pwd_hash, nonce)
+        .and_then([this](std::string token) -> std::expected<void, Error> {
+          token_ = std::move(token);
+          return {};
+        });
+  }
+
   return fetchWebContent()
       .and_then([&](const std::string& content)
                     -> std::expected<LoginContext, Error> {
