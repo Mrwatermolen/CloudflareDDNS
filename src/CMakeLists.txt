@@ -10,7 +10,7 @@ target_link_libraries(my_ddns PRIVATE
 )
 
 target_include_directories(my_ddns PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_definitions(my_ddns PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+target_compile_definitions(my_ddns PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT ASIO_STANDALONE)
 
 add_executable(test_client
     test.cpp

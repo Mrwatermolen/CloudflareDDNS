@@ -9,10 +9,7 @@
 #include <string_view>
 
 #include "common.h"
-
-namespace httplib {
-class Client;
-}
+#include "swsc/client_http.hpp"
 
 namespace cfd {
 
@@ -35,7 +32,7 @@ class MiWiFi {
   auto getPublicIp() -> std::expected<std::string, Error>;
 
  private:
-  std::unique_ptr<httplib::Client> client_;
+  std::unique_ptr<SimpleWeb::Client<SimpleWeb::HTTP>> client_;
   mutable std::mutex client_mutex_;
   std::string token_;
 
@@ -58,7 +55,7 @@ class MiWiFi {
                            std::string_view nonce) -> std::string;
 
   auto requestToken(std::string_view username, std::string_view password,
-                    std::string_view nonce, std::string_view key)
+                    std::string_view nonce)
       -> std::expected<std::string, Error>;
 };
 

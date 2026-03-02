@@ -1,8 +1,8 @@
 #include "miwifi.h"
 
-#include <httplib.h>
 #include <openssl/sha.h>
 
+#include <cctype>
 #include <chrono>
 #include <expected>
 #include <format>
@@ -13,8 +13,10 @@
 #include <regex>
 #include <string>
 #include <string_view>
+#include <swsc/status_code.hpp>
 
 #include "common.h"
+#include "crypto.hpp"
 #include "logger.h"
 
 namespace cfd {
@@ -28,21 +30,75 @@ static const std::regex DEVICE_ID_REGEX{DEVICE_ID_PATTERN_STR.data(),
 static const std::regex KEY_REGEX{KEY_PATTERN_STR.data(),
                                   KEY_PATTERN_STR.size()};
 
-static auto sha1Hex(std::string_view input) {
-  unsigned char hash[SHA_DIGEST_LENGTH];
-  SHA1(reinterpret_cast<const unsigned char*>(input.data()), input.length(),
-       hash);
-  std::string result;
-  result.reserve(SHA_DIGEST_LENGTH * 2);
-  for (auto i : hash) {
-    result += std::format("{:02x}", i);
+using HttpClient = SimpleWeb::Client<SimpleWeb::HTTP>;
+using HttpResponse = HttpClient::Response;
+
+static auto urlEncode(std::string_view value) -> std::string {
+  std::string encoded;
+  encoded.reserve(value.size());
+  for (const auto c : value) {
+    if ((std::isalnum(static_cast<unsigned char>(c)) != 0) || c == '-' ||
+        c == '_' || c == '.' || c == '~') {
+      encoded.push_back(c);
+    } else {
+      encoded += std::format("%{:02X}", static_cast<unsigned char>(c));
+    }
   }
-  return result;
+  return encoded;
 }
 
+static auto encodeFormBody(
+    const std::initializer_list<std::pair<std::string_view, std::string_view>>&
+        fields) -> std::string {
+  std::string body;
+  bool first = true;
+  for (const auto& [key, value] : fields) {
+    if (!first) {
+      body.push_back('&');
+    }
+    first = false;
+    body += urlEncode(key);
+    body.push_back('=');
+    body += urlEncode(value);
+  }
+  return body;
+}
+
+static auto ensureSuccessStatus(const std::shared_ptr<HttpResponse>& res,
+                                std::string_view operation)
+    -> std::expected<void, Error> {
+  if (!res) {
+    auto err_msg = std::format("{}: network error (no response)", operation);
+    LOG_ERROR(err_msg);
+    return std::unexpected{Error{.message = std::move(err_msg)}};
+  }
+
+  if (SimpleWeb::status_code(res->status_code) !=
+      SimpleWeb::StatusCode::success_ok) {
+    auto err_msg =
+        std::format("{}: request failed, status: {}, body: {}", operation,
+                    res->status_code, res->content.string());
+    LOG_ERROR(err_msg);
+    return std::unexpected{Error{.message = std::move(err_msg)}};
+  }
+
+  return {};
+}
+
+// static auto sha1Hex(std::string_view input) {
+//   unsigned char hash[SHA_DIGEST_LENGTH];
+//   SHA1(reinterpret_cast<const unsigned char*>(input.data()), input.length(),
+//        hash);
+//   std::string result;
+//   result.reserve(SHA_DIGEST_LENGTH * 2);
+//   for (auto i : hash) {
+//     result += std::format("{:02x}", i);
+//   }
+//   return result;
+// }a
+
 MiWiFi::MiWiFi(std::string_view host)
-    : client_{
-          std::make_unique<httplib::Client>(std::format("http://{}", host))} {
+    : client_{std::make_unique<HttpClient>(std::string{host})} {
   LOG_DEBUG(std::format("Init MiWiFi client: {}", host));
 }
 
@@ -50,11 +106,26 @@ MiWiFi::~MiWiFi() = default;
 
 auto MiWiFi::fetchWebContent() -> std::expected<std::string, Error> {
   LOG_DEBUG("Fetching web content");
-  std::scoped_lock lock{client_mutex_};
-  auto res = client_->Get(WEB_PATH);
-  CHECK_HTTP_RESULT(res, "Fetch MiWiFi web content");
+  std::shared_ptr<HttpResponse> res;
+  {
+    std::scoped_lock lock{client_mutex_};
+    try {
+      res = client_->request("GET", WEB_PATH);
+    } catch (const std::exception& e) {
+      auto err_msg =
+          std::format("Fetch MiWiFi web content: network error: {}", e.what());
+      LOG_ERROR(err_msg);
+      return std::unexpected{Error{.message = std::move(err_msg)}};
+    }
+  }
+
+  if (auto status = ensureSuccessStatus(res, "Fetch MiWiFi web content");
+      !status) {
+    return std::unexpected{status.error()};
+  }
+
   LOG_DEBUG("Web content fetched");
-  return res->body;
+  return res->content.string();
 }
 
 auto MiWiFi::extractKey(std::string_view web_content)
@@ -95,25 +166,39 @@ auto MiWiFi::generateNonce(std::string_view device_id) -> std::string {
 
 auto MiWiFi::hashPassword(std::string_view password, std::string_view key,
                           std::string_view nonce) -> std::string {
-  auto first_hash = sha1Hex(std::format("{}{}", password, key));
-  return sha1Hex(std::format("{}{}", nonce, first_hash));
+  return crypto::miwifiEncryptPassword(password, key, nonce);
 }
 
 auto MiWiFi::requestToken(std::string_view username, std::string_view password,
-                          std::string_view nonce, std::string_view key)
+                          std::string_view nonce)
     -> std::expected<std::string, Error> {
   LOG_DEBUG("Requesting token");
-  httplib::Params params;
-  params.emplace("username", username);
-  params.emplace("password", password);
-  params.emplace("nonce", nonce);
-  params.emplace("logtype", "2");
 
-  std::scoped_lock lock(client_mutex_);
-  auto res = client_->Post(LOGIN_PATH, params);
-  CHECK_HTTP_RESULT(res, "Request Token");
+  auto body = encodeFormBody({{"username", username},
+                              {"password", password},
+                              {"nonce", nonce},
+                              {"logtype", "2"}});
 
-  auto json_res = nlohmann::json::parse(res->body, nullptr, false);
+  SimpleWeb::CaseInsensitiveMultimap headers;
+  headers.emplace("Content-Type", "application/x-www-form-urlencoded");
+
+  std::shared_ptr<HttpResponse> res;
+  {
+    std::scoped_lock lock(client_mutex_);
+    try {
+      res = client_->request("POST", LOGIN_PATH, body, headers);
+    } catch (const std::exception& e) {
+      auto err_msg = std::format("Request Token: network error: {}", e.what());
+      LOG_ERROR(err_msg);
+      return std::unexpected{Error{.message = std::move(err_msg)}};
+    }
+  }
+
+  if (auto status = ensureSuccessStatus(res, "Request Token"); !status) {
+    return std::unexpected{status.error()};
+  }
+
+  auto json_res = nlohmann::json::parse(res->content.string(), nullptr, false);
   if (json_res.is_discarded()) {
     LOG_ERROR("Invalid JSON in token response");
     return std::unexpected{
@@ -134,7 +219,6 @@ auto MiWiFi::requestToken(std::string_view username, std::string_view password,
 
 struct LoginContext {
   std::string content;
-  std::string key;
   std::string device_id;
   std::string nonce;
   std::string password_hash;
@@ -158,15 +242,13 @@ auto MiWiFi::login(std::string_view username, std::string_view password)
 
         const auto nonce = generateNonce(*dev_res);
         const auto pwd_hash = hashPassword(password, *key_res, nonce);
-        return LoginContext{.key = std::move(*key_res),
-                            .device_id = std::move(*dev_res),
+        return LoginContext{.device_id = std::move(*dev_res),
                             .nonce = nonce,
                             .password_hash = pwd_hash};
       })
       .and_then(
           [&](const LoginContext& ctx) -> std::expected<std::string, Error> {
-            return requestToken(username, ctx.password_hash, ctx.nonce,
-                                ctx.key);
+            return requestToken(username, ctx.password_hash, ctx.nonce);
           })
       .and_then([this](std::string token) -> std::expected<void, Error> {
         token_ = std::move(token);
@@ -182,10 +264,27 @@ auto MiWiFi::apiEndpoint(std::string endpoint)
   }
   auto path = std::format("/cgi-bin/luci/;stok={}/api/{}", token_, endpoint);
   LOG_DEBUG(std::format("API Call: {}", endpoint));
-  std::scoped_lock lock(client_mutex_);
-  auto res = client_->Get(path);
-  CHECK_HTTP_RESULT(res, std::format("API for {}", endpoint));
-  return res->body;
+
+  std::shared_ptr<HttpResponse> res;
+  {
+    std::scoped_lock lock(client_mutex_);
+    try {
+      res = client_->request("GET", path);
+    } catch (const std::exception& e) {
+      auto err_msg =
+          std::format("API for {}: network error: {}", endpoint, e.what());
+      LOG_ERROR(err_msg);
+      return std::unexpected{Error{.message = std::move(err_msg)}};
+    }
+  }
+
+  if (auto status =
+          ensureSuccessStatus(res, std::format("API for {}", endpoint));
+      !status) {
+    return std::unexpected{status.error()};
+  }
+
+  return res->content.string();
 }
 
 auto MiWiFi::getPublicIp() -> std::expected<std::string, Error> {

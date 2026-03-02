@@ -188,13 +188,6 @@ auto main(int argc, char* argv[]) -> int {
   const auto& config = *config_res;
 
   auto miwifi = std::make_shared<cfd::MiWiFi>(config.miwifi_host);
-  auto login_res =
-      miwifi->login(config.miwifi_username, config.miwifi_password);
-  if (!login_res) {
-    LOG_ERROR(
-        std::format("MiWiFi login failed: {}", login_res.error().message));
-    return EXIT_FAILURE;
-  }
 
   cfd::CloudflareDDNS::Config cf_config{
       .email = config.cf_email,
@@ -204,7 +197,15 @@ auto main(int argc, char* argv[]) -> int {
       .ip_file = config.ip_file,
   };
   auto ddns = std::make_unique<cfd::CloudflareDDNS>(cf_config);
-  ddns->setMiwifi(miwifi);
+
+  auto login_res =
+      miwifi->login(config.miwifi_username, config.miwifi_password);
+  if (!login_res) {
+    LOG_ERROR(
+        std::format("MiWiFi login failed: {}", login_res.error().message));
+  } else {
+    ddns->setMiwifi(miwifi);
+  }
 
   auto result = ddns->run();
   if (!result) {
