@@ -10,10 +10,8 @@
 #include <string_view>
 
 #include "common.h"
+#include "swsc/client_https.hpp"
 
-namespace httplib {
-class Client;
-}
 namespace cfd {
 
 // Forward declaration
@@ -52,7 +50,7 @@ class CloudflareDDNS {
 
   Config config_;
   std::shared_ptr<MiWiFi> miwifi_;
-  std::unique_ptr<httplib::Client> cf_client_;
+  std::unique_ptr<SimpleWeb::Client<SimpleWeb::HTTPS>> cf_client_;
   mutable std::mutex client_mutex_;
 };
 

@@ -1,8 +1,5 @@
 #include "cloudflare_ddns.h"
 
-#include <httplib.h>
-#include <openssl/ssl.h>
-
 #include <array>
 #include <expected>
 #include <format>
@@ -12,6 +9,7 @@
 #include <regex>
 #include <string>
 #include <string_view>
+#include <swsc/status_code.hpp>
 #include <utility>
 
 #include "common.h"
@@ -26,17 +24,46 @@ static const std::regex IP_PATTERN{
 static constexpr std::array<std::string_view, 4> IP_SERVICES = {
     "ip.sb", "ipv4.icanhazip.com", "ifconfig.me/ip"};
 
+using HttpsClient = SimpleWeb::Client<SimpleWeb::HTTPS>;
+using HttpResponse = HttpsClient::Response;
+
+static auto ensureSuccessStatus(const std::shared_ptr<HttpResponse>& res,
+                                std::string_view operation)
+    -> std::expected<void, Error> {
+  if (!res) {
+    auto err_msg = std::format("{}: network error (no response)", operation);
+    LOG_ERROR(err_msg);
+    return std::unexpected{Error{.message = std::move(err_msg)}};
+  }
+
+  if (SimpleWeb::status_code(res->status_code) !=
+      SimpleWeb::StatusCode::success_ok) {
+    auto err_msg =
+        std::format("{}: request failed, status: {}, body: {}", operation,
+                    res->status_code, res->content.string());
+    LOG_ERROR(err_msg);
+    return std::unexpected{Error{.message = std::move(err_msg)}};
+  }
+
+  return {};
+}
+
+static auto makeCloudflareHeaders(std::string_view email,
+                                  std::string_view api_key)
+    -> SimpleWeb::CaseInsensitiveMultimap {
+  SimpleWeb::CaseInsensitiveMultimap headers;
+  headers.emplace("X-Auth-Email", std::string{email});
+  headers.emplace("X-Auth-Key", std::string{api_key});
+  headers.emplace("Content-Type", "application/json");
+  return headers;
+}
+
 CloudflareDDNS::CloudflareDDNS(Config config)
     : config_(std::move(config)),
-      cf_client_{
-          std::make_unique<httplib::Client>("https://api.cloudflare.com")} {
+      cf_client_{std::make_unique<HttpsClient>("api.cloudflare.com")} {
   LOG_DEBUG("Init Cloudflare client");
-  cf_client_->enable_server_certificate_verification(true);
-  cf_client_->set_connection_timeout(10, 0);
-  cf_client_->set_read_timeout(10, 0);
-  cf_client_->set_default_headers({{"X-Auth-Email", config_.email},
-                                   {"X-Auth-Key", config_.api_key},
-                                   {"Content-Type", "application/json"}});
+  cf_client_->config.timeout_connect = 10;
+  cf_client_->config.timeout = 10;
 }
 
 CloudflareDDNS::~CloudflareDDNS() = default;
@@ -67,12 +94,26 @@ auto CloudflareDDNS::getPublicIpFromServices()
     -> std::expected<std::string, Error> {
   LOG_DEBUG("Fetching IP from external services");
   for (const auto& host : IP_SERVICES) {
-    httplib::Client service_client(std::format("https://{}", host));
-    service_client.enable_server_certificate_verification(true);
-    service_client.set_connection_timeout(5, 0);
-    auto res = service_client.Get("/");
-    CHECK_HTTP_RESULT(res, std::format("Get IP from service {}", host));
-    std::string ip = res->body;
+    HttpsClient service_client(std::string{host}, true);
+    service_client.config.timeout_connect = 5;
+    service_client.config.timeout = 5;
+
+    std::shared_ptr<HttpResponse> res;
+    try {
+      res = service_client.request("GET", "/");
+    } catch (const std::exception& e) {
+      LOG_WARN(
+          std::format("Get IP from service {} failed: {}", host, e.what()));
+      continue;
+    }
+
+    if (auto status = ensureSuccessStatus(
+            res, std::format("Get IP from service {}", host));
+        !status) {
+      continue;
+    }
+
+    std::string ip = res->content.string();
     ip.erase(0, ip.find_first_not_of(" \n\r\t"));
     ip.erase(ip.find_last_not_of(" \n\r\t") + 1);
     if (validateIp(ip)) {
@@ -140,10 +181,23 @@ auto CloudflareDDNS::writeCurrentIp(std::string_view ip)
 auto CloudflareDDNS::getDnsRecord() -> std::expected<nlohmann::json, Error> {
   std::string path = std::format("/client/v4/zones/{}/dns_records/{}",
                                  config_.zone_id, config_.dns_record_id);
+  auto headers = makeCloudflareHeaders(config_.email, config_.api_key);
+
+  std::shared_ptr<HttpResponse> res;
   std::scoped_lock lock{client_mutex_};
-  auto res = cf_client_->Get(path);
-  CHECK_HTTP_RESULT(res, "Get DNS record");
-  auto json_res = nlohmann::json::parse(res->body, nullptr, false);
+  try {
+    res = cf_client_->request("GET", path, "", headers);
+  } catch (const std::exception& e) {
+    auto err_msg = std::format("Get DNS record: network error: {}", e.what());
+    LOG_ERROR(err_msg);
+    return std::unexpected{Error{.message = std::move(err_msg)}};
+  }
+
+  if (auto status = ensureSuccessStatus(res, "Get DNS record"); !status) {
+    return std::unexpected{status.error()};
+  }
+
+  auto json_res = nlohmann::json::parse(res->content.string(), nullptr, false);
   if (json_res.is_discarded() || !json_res.value("success", false)) {
     LOG_ERROR("Cloudflare API GET error");
     return std::unexpected{Error{.message = "Cloudflare API error on GET"}};
@@ -172,14 +226,29 @@ auto CloudflareDDNS::updateDnsRecord(std::string_view new_ip)
   payload["ttl"] = record.value("ttl", 1);
   payload["proxied"] = record.value("proxied", false);
 
-  std::string path = std::format("/client/v4/zones/{}/dns_records/{}", config_.zone_id,
-                                 config_.dns_record_id);
+  std::string path = std::format("/client/v4/zones/{}/dns_records/{}",
+                                 config_.zone_id, config_.dns_record_id);
   std::string body = payload.dump();
+  auto headers = makeCloudflareHeaders(config_.email, config_.api_key);
+
   {
+    std::shared_ptr<HttpResponse> res;
     std::scoped_lock lock{client_mutex_};
-    auto res = cf_client_->Put(path, body, "application/json");
-    CHECK_HTTP_RESULT(res, "Update DNS record");
-    auto json_res = nlohmann::json::parse(res->body, nullptr, false);
+    try {
+      res = cf_client_->request("PUT", path, body, headers);
+    } catch (const std::exception& e) {
+      auto err_msg =
+          std::format("Update DNS record: network error: {}", e.what());
+      LOG_ERROR(err_msg);
+      return std::unexpected{Error{.message = std::move(err_msg)}};
+    }
+
+    if (auto status = ensureSuccessStatus(res, "Update DNS record"); !status) {
+      return std::unexpected{status.error()};
+    }
+
+    auto json_res =
+        nlohmann::json::parse(res->content.string(), nullptr, false);
     if (json_res.is_discarded() || !json_res.value("success", false)) {
       LOG_ERROR("Cloudflare API PUT error");
       return std::unexpected{Error{.message = "Cloudflare API error on PUT"}};
