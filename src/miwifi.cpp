@@ -17,6 +17,7 @@
 
 #include "common.h"
 #include "crypto.hpp"
+#include "http_utils.h"
 #include "logger.h"
 
 namespace cfd {
@@ -32,70 +33,6 @@ static const std::regex KEY_REGEX{KEY_PATTERN_STR.data(),
 
 using HttpClient = SimpleWeb::Client<SimpleWeb::HTTP>;
 using HttpResponse = HttpClient::Response;
-
-static auto urlEncode(std::string_view value) -> std::string {
-  std::string encoded;
-  encoded.reserve(value.size());
-  for (const auto c : value) {
-    if ((std::isalnum(static_cast<unsigned char>(c)) != 0) || c == '-' ||
-        c == '_' || c == '.' || c == '~') {
-      encoded.push_back(c);
-    } else {
-      encoded += std::format("%{:02X}", static_cast<unsigned char>(c));
-    }
-  }
-  return encoded;
-}
-
-static auto encodeFormBody(
-    const std::initializer_list<std::pair<std::string_view, std::string_view>>&
-        fields) -> std::string {
-  std::string body;
-  bool first = true;
-  for (const auto& [key, value] : fields) {
-    if (!first) {
-      body.push_back('&');
-    }
-    first = false;
-    body += urlEncode(key);
-    body.push_back('=');
-    body += urlEncode(value);
-  }
-  return body;
-}
-
-static auto ensureSuccessStatus(const std::shared_ptr<HttpResponse>& res,
-                                std::string_view operation)
-    -> std::expected<void, Error> {
-  if (!res) {
-    auto err_msg = std::format("{}: network error (no response)", operation);
-    LOG_ERROR(err_msg);
-    return std::unexpected{Error{.message = std::move(err_msg)}};
-  }
-
-  if (SimpleWeb::status_code(res->status_code) !=
-      SimpleWeb::StatusCode::success_ok) {
-    auto err_msg =
-        std::format("{}: request failed, status: {}, body: {}", operation,
-                    res->status_code, res->content.string());
-    LOG_ERROR(err_msg);
-    return std::unexpected{Error{.message = std::move(err_msg)}};
-  }
-
-  return {};
-}
-
-// static auto sha1Hex(std::string_view input) {
-//   unsigned char hash[SHA_DIGEST_LENGTH];
-//   SHA1(reinterpret_cast<const unsigned char*>(input.data()), input.length(),
-//        hash);
-//   std::string result;
-//   result.reserve(SHA_DIGEST_LENGTH * 2);
-//   for (auto i : hash) {
-//     result += std::format("{:02x}", i);
-//   }
-//   return result;
-// }a
 
 MiWiFi::MiWiFi(std::string_view host, std::string_view key,
                std::string_view device_id)
@@ -338,4 +275,9 @@ auto MiWiFi::getPublicIp() -> std::expected<std::string, Error> {
             return ip;
           });
 }
+
+auto MiWiFi::resolve() -> std::expected<std::string, Error> {
+  return getPublicIp();
+}
+
 }  // namespace cfd

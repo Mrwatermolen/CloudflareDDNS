@@ -1,6 +1,7 @@
 add_executable(my_ddns
     main.cpp
     cloudflare_ddns.cpp
+    public_ip_resolver.cpp
     miwifi.cpp
 )
 

@@ -1,7 +1,11 @@
 #ifndef __CLOUDFLARE_DDNS_COMMON_H__
 #define __CLOUDFLARE_DDNS_COMMON_H__
 
+#include <expected>
+#include <memory>
+#include <regex>
 #include <string>
+#include <utility>
 namespace cfd {
 
 struct Error {
@@ -23,6 +27,47 @@ struct Error {
       return std::unexpected<Error>{Error{.message = __err_msg}};              \
     }                                                                          \
   } while (0)
+
+class IpResolver {
+ public:
+  virtual ~IpResolver() = default;
+  virtual auto resolve() const -> std::expected<std::string, Error> = 0;
+};
+
+template <typename T>
+class IpResolverWrapper : public IpResolver {
+ public:
+  template <typename... Args>
+  explicit IpResolverWrapper(Args&&... args)
+      : impl(std::make_unique<T>(std::forward<Args>(args)...)) {}
+
+  auto resolve() const -> std::expected<std::string, Error> override {
+    return impl->resolve();
+  }
+
+  std::unique_ptr<T> impl;
+};
+
+inline auto validateIpv4(std::string_view ip) -> bool {
+  static const std::regex ip_pattern{
+      R"(^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$)"};
+
+  std::match_results<std::string_view::const_iterator> match;
+  if (!std::regex_match(ip.begin(), ip.end(), match, ip_pattern)) {
+    return false;
+  }
+  for (int i = 1; i <= 4; ++i) {
+    std::string_view part = {match[i].first, match[i].second};
+    if (part.length() > 3) {
+      return false;
+    }
+    int val = std::stoi(std::string(part));
+    if (val < 0 || val > 255) {
+      return false;
+    }
+  }
+  return true;
+}
 
 }  // namespace cfd
 

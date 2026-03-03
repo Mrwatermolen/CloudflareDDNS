@@ -15,8 +15,8 @@ namespace cfd {
 
 class MiWiFi {
  public:
-    explicit MiWiFi(std::string_view host, std::string_view key = {},
-                                    std::string_view device_id = {});
+  explicit MiWiFi(std::string_view host, std::string_view key = {},
+                  std::string_view device_id = {});
 
   ~MiWiFi();
 
@@ -32,12 +32,14 @@ class MiWiFi {
 
   auto getPublicIp() -> std::expected<std::string, Error>;
 
+  auto resolve() -> std::expected<std::string, Error>;
+
  private:
   std::unique_ptr<SimpleWeb::Client<SimpleWeb::HTTP>> client_;
   mutable std::mutex client_mutex_;
   std::string token_;
-    std::string key_;
-    std::string device_id_;
+  std::string key_;
+  std::string device_id_;
 
   static auto getRng() -> std::mt19937& {
     thread_local std::mt19937 gen{std::random_device{}()};

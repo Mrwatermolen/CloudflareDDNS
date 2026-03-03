@@ -11,7 +11,9 @@ config 配置
   "MiWiFi": {
     "host": "miwifi.com",
     "username": "admin",
-    "password": "password"
+    "password": "password",
+    "key": "optional-login-key",
+    "device_id": "optional-device-id"
   },
   "cloudflare": {
     "email": "example@example.com",

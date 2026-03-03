@@ -12,6 +12,7 @@
 #include "cloudflare_ddns.h"
 #include "logger.h"
 #include "miwifi.h"
+#include "public_ip_resolver.h"
 
 namespace {
 struct AppConfig {
@@ -201,7 +202,7 @@ auto main(int argc, char* argv[]) -> int {
   }
   const auto& config = *config_res;
 
-  auto miwifi = std::make_shared<cfd::MiWiFi>(
+  auto miwifi = std::make_unique<cfd::IpResolverWrapper<cfd::MiWiFi>>(
       config.miwifi_host, config.miwifi_key, config.miwifi_device_id);
 
   cfd::CloudflareDDNS::Config cf_config{
@@ -214,13 +215,16 @@ auto main(int argc, char* argv[]) -> int {
   auto ddns = std::make_unique<cfd::CloudflareDDNS>(cf_config);
 
   auto login_res =
-      miwifi->login(config.miwifi_username, config.miwifi_password);
+      miwifi->impl->login(config.miwifi_username, config.miwifi_password);
   if (!login_res) {
     LOG_ERROR(
         std::format("MiWiFi login failed: {}", login_res.error().message));
   } else {
-    ddns->setMiwifi(miwifi);
+    ddns->addIpResolver(std::move(miwifi));
   }
+
+  ddns->addIpResolver(
+      std::make_unique<cfd::IpResolverWrapper<cfd::PublicIpResolver>>());
 
   auto result = ddns->run();
   if (!result) {

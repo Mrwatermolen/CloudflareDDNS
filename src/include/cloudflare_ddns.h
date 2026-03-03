@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "common.h"
 #include "swsc/client_https.hpp"
@@ -33,14 +34,12 @@ class CloudflareDDNS {
   CloudflareDDNS(const CloudflareDDNS&) = delete;
   CloudflareDDNS& operator=(const CloudflareDDNS&) = delete;
 
-  void setMiwifi(std::shared_ptr<MiWiFi> miwifi);
+  auto addIpResolver(std::shared_ptr<IpResolver> resolver) -> void;
 
   auto run() -> std::expected<void, Error>;
 
  private:
-  static auto validateIp(std::string_view ip) -> bool;
   auto getPublicIp() -> std::expected<std::string, Error>;
-  auto getPublicIpFromServices() -> std::expected<std::string, Error>;
 
   auto readLastIp() -> std::expected<std::string, Error>;
   auto writeCurrentIp(std::string_view ip) -> std::expected<void, Error>;
@@ -49,7 +48,8 @@ class CloudflareDDNS {
   auto updateDnsRecord(std::string_view new_ip) -> std::expected<void, Error>;
 
   Config config_;
-  std::shared_ptr<MiWiFi> miwifi_;
+  // std::shared_ptr<MiWiFi> miwifi_;
+  std::vector<std::shared_ptr<IpResolver>> resolvers_;
   std::unique_ptr<SimpleWeb::Client<SimpleWeb::HTTPS>> cf_client_;
   mutable std::mutex client_mutex_;
 };
