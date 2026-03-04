@@ -2,6 +2,7 @@
 #define __CLOUDFLARE_DDNS_COMMON_H__
 
 #include <expected>
+#include <functional>
 #include <memory>
 #include <regex>
 #include <string>
@@ -30,8 +31,15 @@ struct Error {
 
 class IpResolver {
  public:
+  IpResolver() = default;
+  IpResolver(const IpResolver&) = delete;
+  IpResolver& operator=(const IpResolver&) = delete;
+  IpResolver(IpResolver&&) = delete;
   virtual ~IpResolver() = default;
-  virtual auto resolve() const -> std::expected<std::string, Error> = 0;
+  virtual auto resolve() -> std::expected<std::string, Error> = 0;
+  virtual auto resolveAsync(
+      std::function<void(std::expected<std::string, Error>)> callback)
+      -> void = 0;
 };
 
 template <typename T>
@@ -41,8 +49,14 @@ class IpResolverWrapper : public IpResolver {
   explicit IpResolverWrapper(Args&&... args)
       : impl(std::make_unique<T>(std::forward<Args>(args)...)) {}
 
-  auto resolve() const -> std::expected<std::string, Error> override {
+  auto resolve() -> std::expected<std::string, Error> override {
     return impl->resolve();
+  }
+
+  auto resolveAsync(
+      std::function<void(std::expected<std::string, Error>)> callback)
+      -> void override {
+    impl->resolveAsync(std::move(callback));
   }
 
   std::unique_ptr<T> impl;

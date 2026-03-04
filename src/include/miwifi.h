@@ -9,14 +9,16 @@
 #include <string_view>
 
 #include "common.h"
+#include "swsc/asio_compatibility.hpp"
 #include "swsc/client_http.hpp"
 
 namespace cfd {
 
-class MiWiFi {
+class MiWiFi : public std::enable_shared_from_this<MiWiFi> {
  public:
   explicit MiWiFi(std::string_view host, std::string_view key = {},
-                  std::string_view device_id = {});
+                  std::string_view device_id = {},
+                  std::shared_ptr<SimpleWeb::io_context> io_context = nullptr);
 
   ~MiWiFi();
 
@@ -28,15 +30,31 @@ class MiWiFi {
   auto login(std::string_view username, std::string_view password)
       -> std::expected<void, Error>;
 
-  auto apiEndpoint(std::string endpoint) -> std::expected<std::string, Error>;
+  auto apiEndpoint(std::string_view endpoint)
+      -> std::expected<std::string, Error>;
 
   auto getPublicIp() -> std::expected<std::string, Error>;
 
   auto resolve() -> std::expected<std::string, Error>;
 
+  auto loginAsync(std::string_view username, std::string_view password,
+                  std::function<void(std::expected<void, Error>)> callback)
+      -> void;
+
+  auto apiEndpointAsync(
+      std::string endpoint,
+      std::function<void(std::expected<std::string, Error>)> callback) -> void;
+
+  auto getPublicIpAsync(
+      std::function<void(std::expected<std::string, Error>)> callback) -> void;
+
+  auto resolveAsync(
+      std::function<void(std::expected<std::string, Error>)> callback) -> void;
+
  private:
+  std::shared_ptr<SimpleWeb::io_context> io_context_{nullptr};
   std::unique_ptr<SimpleWeb::Client<SimpleWeb::HTTP>> client_;
-  mutable std::mutex client_mutex_;
+  mutable std::mutex token_mutex_;
   std::string token_;
   std::string key_;
   std::string device_id_;
@@ -62,6 +80,14 @@ class MiWiFi {
   auto requestToken(std::string_view username, std::string_view password,
                     std::string_view nonce)
       -> std::expected<std::string, Error>;
+
+  auto fetchWebContentAsync(
+      std::function<void(std::expected<std::string, Error>)> callback) -> void;
+
+  auto requestTokenAsync(
+      std::string_view username, std::string_view password,
+      std::string_view nonce,
+      std::function<void(std::expected<std::string, Error>)> callback) -> void;
 };
 
 }  // namespace cfd

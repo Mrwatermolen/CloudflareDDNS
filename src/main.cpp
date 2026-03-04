@@ -8,6 +8,8 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 #include "cloudflare_ddns.h"
 #include "logger.h"
@@ -202,9 +204,6 @@ auto main(int argc, char* argv[]) -> int {
   }
   const auto& config = *config_res;
 
-  auto miwifi = std::make_unique<cfd::IpResolverWrapper<cfd::MiWiFi>>(
-      config.miwifi_host, config.miwifi_key, config.miwifi_device_id);
-
   cfd::CloudflareDDNS::Config cf_config{
       .email = config.cf_email,
       .api_key = config.cf_api_key,
@@ -214,23 +213,40 @@ auto main(int argc, char* argv[]) -> int {
   };
   auto ddns = std::make_unique<cfd::CloudflareDDNS>(cf_config);
 
-  auto login_res =
-      miwifi->impl->login(config.miwifi_username, config.miwifi_password);
-  if (!login_res) {
-    LOG_ERROR(
-        std::format("MiWiFi login failed: {}", login_res.error().message));
-  } else {
-    ddns->addIpResolver(std::move(miwifi));
-  }
+  auto miwifi = std::make_shared<cfd::IpResolverWrapper<cfd::MiWiFi>>(
+      config.miwifi_host, config.miwifi_key, config.miwifi_device_id,
+      ddns->ioContext());
+  miwifi->impl->loginAsync(
+      config.miwifi_username, config.miwifi_password,
+      [ddns_ptr = ddns.get(),
+       miwifi](std::expected<void, cfd::Error> login_res) {
+        if (!login_res) {
+          LOG_ERROR(std::format("MiWiFi login failed: {}",
+                                login_res.error().message));
+        } else {
+          ddns_ptr->addIpResolver(miwifi);
+        }
+      });
+
+  ddns->ioContext()->run();
+
+  ddns->ioContext()->restart();
 
   ddns->addIpResolver(
-      std::make_unique<cfd::IpResolverWrapper<cfd::PublicIpResolver>>());
+      std::make_shared<cfd::IpResolverWrapper<cfd::PublicIpResolver>>(
+          std::vector<std::string>{}, ddns->ioContext()));
 
-  auto result = ddns->run();
-  if (!result) {
-    LOG_ERROR(std::format("DDNS run failed: {}", result.error().message));
-    return EXIT_FAILURE;
-  }
+  ddns->runAsync([](std::expected<void, cfd::Error> res) {
+    if (res) {
+      LOG_INFO("DDNS update successful");
+    } else {
+      LOG_ERROR(std::format("DDNS update failed: {}", res.error().message));
+    }
+  });
+
+  std::thread io_thread(
+      [ddns_ptr = ddns.get()]() { ddns_ptr->ioContext()->run(); });
+  io_thread.join();
 
   LOG_INFO("DDNS Service End");
   return EXIT_SUCCESS;

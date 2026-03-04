@@ -29,10 +29,18 @@ static auto makeCloudflareHeadersGlobalApi(std::string_view email,
   return headers;
 }
 
-CloudflareDDNS::CloudflareDDNS(Config config)
+CloudflareDDNS::CloudflareDDNS(
+    Config config, std::shared_ptr<SimpleWeb::io_context> io_context)
     : config_(std::move(config)),
+      io_context_(std::move(io_context)),
       cf_client_{std::make_unique<HttpsClient>("api.cloudflare.com")} {
-  LOG_DEBUG("Init Cloudflare client");
+  if (io_context_) {
+    cf_client_->io_service = io_context_;
+  } else {
+    LOG_DEBUG("No io_context provided, using internal");
+    io_context_ = std::make_shared<SimpleWeb::io_context>();
+    cf_client_->io_service = io_context_;
+  }
   cf_client_->config.timeout_connect = 10;
   cf_client_->config.timeout = 10;
 }
@@ -198,6 +206,70 @@ auto CloudflareDDNS::run() -> std::expected<void, Error> {
         }
         return writeCurrentIp(current_ip);
       });
+}
+
+auto CloudflareDDNS::runAsync(
+    std::function<void(std::expected<void, Error>)> callback) -> void {
+  getpublicIpAsync([this, callback = std::move(callback)](
+                       std::expected<std::string, Error> res) {
+    if (!res) {
+      callback(std::unexpected{res.error()});
+      return;
+    }
+    const std::string& current_ip = *res;
+    auto last_ip_res = readLastIp();
+
+    if (last_ip_res && *last_ip_res == current_ip) {
+      LOG_INFO("IP unchanged");
+      callback({});
+      return;
+    }
+    LOG_INFO("IP changed");
+    updateDnsRecordAsync(current_ip,
+                         [this, current_ip, callback = callback](
+                             std::expected<void, Error> update_res) {
+                           if (!update_res) {
+                             callback(std::unexpected{update_res.error()});
+                             return;
+                           }
+                           auto res = writeCurrentIp(current_ip);
+                           if (!res) {
+                             callback(std::unexpected(res.error()));
+                             return;
+                           }
+                           callback({});
+                         });
+  });
+
+  LOG_DEBUG("Starting IO context loop");
+  io_context_->run();
+  LOG_DEBUG("IO context loop ended");
+}
+
+auto CloudflareDDNS::getpublicIpAsync(
+    std::function<void(std::expected<std::string, Error>)> callback) -> void {
+  for (const auto& resolver : resolvers_) {
+    if (!resolver) {
+      LOG_WARN("Null IP resolver");
+      continue;
+    }
+
+    resolver->resolveAsync(
+        [callback = std::move(callback)](
+            std::expected<std::string, Error> ip_res) mutable {
+          callback(std::move(ip_res));
+        });
+    return;
+  }
+
+  callback(std::unexpected{Error{.message = "All IP resolvers failed"}});
+}
+
+auto CloudflareDDNS::updateDnsRecordAsync(
+    std::string_view new_ip,
+    std::function<void(std::expected<void, Error>)> callback) -> void {
+  // TODO(franzero):
+  callback(updateDnsRecord(new_ip));
 }
 
 }  // namespace cfd
