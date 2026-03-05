@@ -333,7 +333,7 @@ auto CloudflareDDNS::getDnsRecordAsync(
 }
 
 auto CloudflareDDNS::updateDnsRecordAsync(
-    std::string_view new_ip,
+    std::string new_ip,
     std::function<void(std::expected<void, Error>)> callback) -> void {
   getDnsRecordAsync(
       [this, callback = std::move(callback),
