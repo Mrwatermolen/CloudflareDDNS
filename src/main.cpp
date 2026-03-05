@@ -215,7 +215,7 @@ auto main(int argc, char* argv[]) -> int {
 
   auto miwifi = std::make_shared<cfd::IpResolverWrapper<cfd::MiWiFi>>(
       config.miwifi_host, config.miwifi_key, config.miwifi_device_id,
-      ddns->ioContext());
+      ddns->io_context);
   miwifi->impl->loginAsync(
       config.miwifi_username, config.miwifi_password,
       [ddns_ptr = ddns.get(),
@@ -228,13 +228,13 @@ auto main(int argc, char* argv[]) -> int {
         }
       });
 
-  ddns->ioContext()->run();
+  ddns->io_context->run();
 
-  ddns->ioContext()->restart();
+  ddns->io_context->restart();
 
   ddns->addIpResolver(
       std::make_shared<cfd::IpResolverWrapper<cfd::PublicIpResolver>>(
-          std::vector<std::string>{}, ddns->ioContext()));
+          std::vector<std::string>{}, ddns->io_context));
 
   ddns->runAsync([](std::expected<void, cfd::Error> res) {
     if (res) {
@@ -245,7 +245,9 @@ auto main(int argc, char* argv[]) -> int {
   });
 
   std::thread io_thread(
-      [ddns_ptr = ddns.get()]() { ddns_ptr->ioContext()->run(); });
+      [ddns_ptr = ddns.get()]() { ddns_ptr->io_context->run(); });
+
+  ddns->io_context->run();
   io_thread.join();
 
   LOG_INFO("DDNS Service End");

@@ -44,9 +44,7 @@ class CloudflareDDNS {
   auto runAsync(std::function<void(std::expected<void, Error>)> callback)
       -> void;
 
-  auto ioContext() const -> auto { return io_context_; }
-
-  auto ioContext() -> auto { return io_context_; }
+  std::shared_ptr<SimpleWeb::io_context> io_context{nullptr};
 
  private:
   auto getPublicIp() -> std::expected<std::string, Error>;
@@ -57,16 +55,8 @@ class CloudflareDDNS {
   auto getDnsRecord() -> std::expected<nlohmann::json, Error>;
   auto updateDnsRecord(std::string_view new_ip) -> std::expected<void, Error>;
 
-  auto getpublicIpAsync(
+  auto getPublicIpAsync(
       std::function<void(std::expected<std::string, Error>)> callback) -> void;
-
-  // auto readLastIpAsync(
-  //     std::function<void(std::expected<std::string, Error>)> callback) ->
-  //     void;
-
-  // auto writeCurrentIpAsync(
-  //     std::string_view ip,
-  //     std::function<void(std::expected<void, Error>)> callback) -> void;
 
   auto getDnsRecordAsync(
       std::function<void(std::expected<nlohmann::json, Error>)> callback)
@@ -77,7 +67,6 @@ class CloudflareDDNS {
       std::function<void(std::expected<void, Error>)> callback) -> void;
 
   Config config_;
-  std::shared_ptr<SimpleWeb::io_context> io_context_{nullptr};
   std::vector<std::shared_ptr<IpResolver>> resolvers_;
   std::unique_ptr<SimpleWeb::Client<SimpleWeb::HTTPS>> cf_client_;
   mutable std::mutex client_mutex_;

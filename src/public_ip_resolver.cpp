@@ -1,7 +1,9 @@
 #include "public_ip_resolver.h"
 
+#include <atomic>
 #include <format>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -65,7 +67,7 @@ PublicIpResolver::PublicIpResolver(
     std::shared_ptr<SimpleWeb::io_context> io_context)
     : ip_services_(std::move(services)), io_context_{std::move(io_context)} {
   if (ip_services_.empty()) {
-    ip_services_ = {"https://ip.sb/ip", "https://ipv4.icanhazip.com/",
+    ip_services_ = {"https://api.ip.sb/ip", "https://ipv4.icanhazip.com/",
                     "https://ifconfig.me/ip"};
   }
 }
@@ -118,6 +120,13 @@ auto PublicIpResolver::resolve() const -> std::expected<std::string, Error> {
 auto PublicIpResolver::resolveAsync(
     std::function<void(std::expected<std::string, Error>)> callback) const
     -> void {
+  struct ServiceRequest {
+    std::string host;
+    ParsedHttpRequest req;
+  };
+
+  std::vector<ServiceRequest> services;
+  services.reserve(ip_services_.size());
   for (const auto& host : ip_services_) {
     const auto req_res = parseUrlToHttpRequest(host);
     if (!req_res) {
@@ -130,6 +139,27 @@ auto PublicIpResolver::resolveAsync(
       LOG_ERROR(std::format("Insecure IP service URL (http): {}", host));
       continue;
     }
+
+    services.push_back(ServiceRequest{.host = host, .req = req});
+  }
+
+  if (services.empty()) {
+    callback(std::unexpected{Error{.message = "All IP services failed"}});
+    return;
+  }
+
+  auto done = std::make_shared<std::atomic_bool>(false);
+  auto pending = std::make_shared<std::atomic_size_t>(services.size());
+  auto last_error =
+      std::make_shared<Error>(Error{.message = "All IP services failed"});
+  auto error_mutex = std::make_shared<std::mutex>();
+  auto shared_callback =
+      std::make_shared<std::function<void(std::expected<std::string, Error>)>>(
+          std::move(callback));
+
+  for (const auto& service : services) {
+    const auto& host = service.host;
+    const auto& req = service.req;
     LOG_DEBUG(std::format("Querying IP service: {}", req.host));
     auto client = std::make_shared<HttpsClient>(req.host, true);
     client->config.timeout_connect = 5;
@@ -138,30 +168,43 @@ auto PublicIpResolver::resolveAsync(
 
     client->request(
         "GET", req.target,
-        [host, callback = std::move(callback), client = client](auto&& res,
-                                                                auto&& err) {
+        [host, done, pending, last_error, error_mutex, shared_callback,
+         client = client](auto&& res, auto&& err) {
           if (err) {
             LOG_WARN(std::format("Get IP from service {} failed: {}", host,
                                  err.message()));
-            callback(std::unexpected{Error{.message = err.message()}});
-            return;
-          }
-          if (auto status = ensureSuccessStatus(
-                  res, std::format("Get IP from service {}", host));
-              !status) {
-            callback(std::unexpected{status.error()});
-            return;
+            std::scoped_lock lock(*error_mutex);
+            *last_error = Error{.message = err.message()};
+          } else if (auto status = ensureSuccessStatus(
+                         res, std::format("Get IP from service {}", host));
+                     !status) {
+            std::scoped_lock lock(*error_mutex);
+            *last_error = status.error();
+          } else {
+            std::string ip = trimCopy(res->content.string());
+            if (!validateIpv4(ip)) {
+              LOG_WARN(std::format("Invalid IP format from service {}: {}",
+                                   host, ip));
+              std::scoped_lock lock(*error_mutex);
+              *last_error = Error{.message = "Invalid IP format"};
+            } else {
+              LOG_INFO(std::format("Public IP from service {}: {}", host, ip));
+              bool expected = false;
+              if (done->compare_exchange_strong(expected, true,
+                                                std::memory_order_acq_rel)) {
+                (*shared_callback)(std::move(ip));
+              }
+            }
           }
 
-          std::string ip = trimCopy(res->content.string());
-          if (!validateIpv4(ip)) {
-            LOG_WARN(
-                std::format("Invalid IP format from service {}: {}", host, ip));
-            callback(std::unexpected{Error{.message = "Invalid IP format"}});
-            return;
+          const auto remain = pending->fetch_sub(1, std::memory_order_acq_rel);
+          if (remain == 1) {
+            bool expected = false;
+            if (done->compare_exchange_strong(expected, true,
+                                              std::memory_order_acq_rel)) {
+              (*shared_callback)(std::unexpected{*last_error});
+            }
           }
-          LOG_INFO(std::format("Public IP from service {}: {}", host, ip));
-          callback(ip);
         });
   }
 }
