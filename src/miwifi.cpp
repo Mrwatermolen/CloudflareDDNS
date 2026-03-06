@@ -466,8 +466,6 @@ auto MiWiFi::requestTokenAsync(
           return;
         }
         if (auto status = ensureSuccessStatus(res, "Request Token"); !status) {
-          LOG_ERROR(
-              std::format("Request Token failed: {}", status.error().message));
           callback(std::unexpected{status.error()});
           return;
         }

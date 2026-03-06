@@ -211,44 +211,47 @@ auto main(int argc, char* argv[]) -> int {
       .dns_record_id = config.cf_dns_record_id,
       .ip_file = config.ip_file,
   };
-  auto ddns = std::make_unique<cfd::CloudflareDDNS>(cf_config);
+  auto io_context = std::make_shared<SimpleWeb::io_context>();
+  auto ddns = std::make_shared<cfd::CloudflareDDNS>(cf_config, io_context);
 
   auto miwifi = std::make_shared<cfd::IpResolverWrapper<cfd::MiWiFi>>(
       config.miwifi_host, config.miwifi_key, config.miwifi_device_id,
-      ddns->io_context);
+      io_context);
   miwifi->impl->loginAsync(
       config.miwifi_username, config.miwifi_password,
-      [ddns_ptr = ddns.get(),
-       miwifi](std::expected<void, cfd::Error> login_res) {
+      [io_context, ddns, miwifi](std::expected<void, cfd::Error> login_res) {
         if (!login_res) {
           LOG_ERROR(std::format("MiWiFi login failed: {}",
                                 login_res.error().message));
         } else {
-          ddns_ptr->addIpResolver(miwifi);
+          ddns->addIpResolver(miwifi);
         }
       });
 
-  ddns->io_context->run();
-
-  ddns->io_context->restart();
-
   ddns->addIpResolver(
       std::make_shared<cfd::IpResolverWrapper<cfd::PublicIpResolver>>(
-          std::vector<std::string>{}, ddns->io_context));
+          std::vector<std::string>{}, io_context));
 
-  ddns->runAsync([](std::expected<void, cfd::Error> res) {
+  ddns->runAsync([&ddns, io_context](std::expected<void, cfd::Error> res) {
     if (res) {
       LOG_INFO("DDNS update successful");
+      io_context->stop();
     } else {
       LOG_ERROR(std::format("DDNS update failed: {}", res.error().message));
     }
   });
 
-  std::thread io_thread(
-      [ddns_ptr = ddns.get()]() { ddns_ptr->io_context->run(); });
+  std::vector<std::thread> threads;
+  const auto thread_count = std::thread::hardware_concurrency();
+  constexpr decltype(thread_count) max_threads = 4;
+  for (unsigned i = 0;
+       i < std::min(thread_count != 0 ? thread_count : 2, max_threads); ++i) {
+    threads.emplace_back([io_context] { io_context->run(); });
+  }
 
-  ddns->io_context->run();
-  io_thread.join();
+  for (auto& thread : threads) {
+    thread.join();
+  }
 
   LOG_INFO("DDNS Service End");
   return EXIT_SUCCESS;

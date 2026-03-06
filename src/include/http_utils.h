@@ -26,9 +26,8 @@ auto ensureSuccessStatus(const std::shared_ptr<HttpResponse>& res,
 
   if (SimpleWeb::status_code(res->status_code) !=
       SimpleWeb::StatusCode::success_ok) {
-    auto err_msg =
-        std::format("{}: request failed, status: {}, body: {}", operation,
-                    res->status_code, res->content.string());
+    auto err_msg = std::format("{}: request failed, status: {}", operation,
+                               res->status_code);
     LOG_ERROR(err_msg);
     return std::unexpected{Error{.message = std::move(err_msg)}};
   }

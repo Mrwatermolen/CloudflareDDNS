@@ -44,15 +44,15 @@ class CloudflareDDNS {
   auto runAsync(std::function<void(std::expected<void, Error>)> callback)
       -> void;
 
-  std::shared_ptr<SimpleWeb::io_context> io_context{nullptr};
-
  private:
   auto getPublicIp() -> std::expected<std::string, Error>;
 
   auto readLastIp() -> std::expected<std::string, Error>;
+
   auto writeCurrentIp(std::string_view ip) -> std::expected<void, Error>;
 
   auto getDnsRecord() -> std::expected<nlohmann::json, Error>;
+
   auto updateDnsRecord(std::string_view new_ip) -> std::expected<void, Error>;
 
   auto getPublicIpAsync(
@@ -67,9 +67,10 @@ class CloudflareDDNS {
       std::function<void(std::expected<void, Error>)> callback) -> void;
 
   Config config_;
-  std::vector<std::shared_ptr<IpResolver>> resolvers_;
+  std::shared_ptr<SimpleWeb::io_context> io_context_{nullptr};
   std::unique_ptr<SimpleWeb::Client<SimpleWeb::HTTPS>> cf_client_;
-  mutable std::mutex client_mutex_;
+  mutable std::mutex resolvers_mutex_;
+  std::vector<std::shared_ptr<IpResolver>> resolvers_;
 };
 
 }  // namespace cfd

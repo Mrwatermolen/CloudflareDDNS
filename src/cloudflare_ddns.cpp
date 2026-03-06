@@ -33,14 +33,14 @@ static auto makeCloudflareHeadersGlobalApi(std::string_view email,
 CloudflareDDNS::CloudflareDDNS(
     Config config, std::shared_ptr<SimpleWeb::io_context> io_context)
     : config_(std::move(config)),
-      io_context(std::move(io_context)),
+      io_context_(std::move(io_context)),
       cf_client_{std::make_unique<HttpsClient>("api.cloudflare.com")} {
-  if (this->io_context) {
-    cf_client_->io_service = this->io_context;
+  if (this->io_context_) {
+    cf_client_->io_service = this->io_context_;
   } else {
     LOG_DEBUG("No io_context provided, using internal");
-    this->io_context = std::make_shared<SimpleWeb::io_context>();
-    cf_client_->io_service = this->io_context;
+    this->io_context_ = std::make_shared<SimpleWeb::io_context>();
+    cf_client_->io_service = this->io_context_;
   }
   cf_client_->config.timeout_connect = 10;
   cf_client_->config.timeout = 10;
@@ -50,10 +50,12 @@ CloudflareDDNS::~CloudflareDDNS() = default;
 
 auto CloudflareDDNS::addIpResolver(std::shared_ptr<IpResolver> resolver)
     -> void {
+  std::scoped_lock lock(resolvers_mutex_);
   resolvers_.push_back(std::move(resolver));
 }
 
 auto CloudflareDDNS::getPublicIp() -> std::expected<std::string, Error> {
+  std::scoped_lock lock(resolvers_mutex_);
   LOG_DEBUG("Resolving public IP");
   for (const auto& resolver : resolvers_) {
     if (!resolver) {
@@ -252,6 +254,7 @@ auto CloudflareDDNS::getPublicIpAsync(
       std::make_shared<std::function<void(std::expected<std::string, Error>)>>(
           std::move(callback));
 
+  std::scoped_lock lock(resolvers_mutex_);
   const auto started =
       std::count_if(resolvers_.begin(), resolvers_.end(),
                     [](const auto& resolver) { return resolver != nullptr; });
