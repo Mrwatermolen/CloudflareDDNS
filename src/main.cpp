@@ -8,16 +8,21 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 #include "cloudflare_ddns.h"
 #include "logger.h"
 #include "miwifi.h"
+#include "public_ip_resolver.h"
 
 namespace {
 struct AppConfig {
   std::string miwifi_host;
   std::string miwifi_username;
   std::string miwifi_password;
+  std::string miwifi_key;
+  std::string miwifi_device_id;
   std::string cf_email;
   std::string cf_api_key;
   std::string cf_zone_id;
@@ -103,6 +108,18 @@ auto loadConfigFromFile(const std::filesystem::path& config_path)
     }
     config.miwifi_password = std::move(*password_res);
 
+    auto key_res = get_nested_string("MiWiFi", "key", false);
+    if (!key_res) {
+      return std::unexpected(key_res.error());
+    }
+    config.miwifi_key = std::move(*key_res);
+
+    auto device_id_res = get_nested_string("MiWiFi", "device_id", false);
+    if (!device_id_res) {
+      return std::unexpected(device_id_res.error());
+    }
+    config.miwifi_device_id = std::move(*device_id_res);
+
     auto email_res = get_nested_string("cloudflare", "email");
     if (!email_res) {
       return std::unexpected(email_res.error());
@@ -187,15 +204,6 @@ auto main(int argc, char* argv[]) -> int {
   }
   const auto& config = *config_res;
 
-  auto miwifi = std::make_shared<cfd::MiWiFi>(config.miwifi_host);
-  auto login_res =
-      miwifi->login(config.miwifi_username, config.miwifi_password);
-  if (!login_res) {
-    LOG_ERROR(
-        std::format("MiWiFi login failed: {}", login_res.error().message));
-    return EXIT_FAILURE;
-  }
-
   cfd::CloudflareDDNS::Config cf_config{
       .email = config.cf_email,
       .api_key = config.cf_api_key,
@@ -203,13 +211,46 @@ auto main(int argc, char* argv[]) -> int {
       .dns_record_id = config.cf_dns_record_id,
       .ip_file = config.ip_file,
   };
-  auto ddns = std::make_unique<cfd::CloudflareDDNS>(cf_config);
-  ddns->setMiwifi(miwifi);
+  auto io_context = std::make_shared<SimpleWeb::io_context>();
+  auto ddns = std::make_shared<cfd::CloudflareDDNS>(cf_config, io_context);
 
-  auto result = ddns->run();
-  if (!result) {
-    LOG_ERROR(std::format("DDNS run failed: {}", result.error().message));
-    return EXIT_FAILURE;
+  auto miwifi = std::make_shared<cfd::IpResolverWrapper<cfd::MiWiFi>>(
+      config.miwifi_host, config.miwifi_key, config.miwifi_device_id,
+      io_context);
+  miwifi->impl->loginAsync(
+      config.miwifi_username, config.miwifi_password,
+      [io_context, ddns, miwifi](std::expected<void, cfd::Error> login_res) {
+        if (!login_res) {
+          LOG_ERROR(std::format("MiWiFi login failed: {}",
+                                login_res.error().message));
+        } else {
+          ddns->addIpResolver(miwifi);
+        }
+      });
+
+  ddns->addIpResolver(
+      std::make_shared<cfd::IpResolverWrapper<cfd::PublicIpResolver>>(
+          std::vector<std::string>{}, io_context));
+
+  ddns->runAsync([&ddns, io_context](std::expected<void, cfd::Error> res) {
+    if (res) {
+      LOG_INFO("DDNS update successful");
+      io_context->stop();
+    } else {
+      LOG_ERROR(std::format("DDNS update failed: {}", res.error().message));
+    }
+  });
+
+  std::vector<std::thread> threads;
+  const auto thread_count = std::thread::hardware_concurrency();
+  constexpr decltype(thread_count) max_threads = 4;
+  for (unsigned i = 0;
+       i < std::min(thread_count != 0 ? thread_count : 2, max_threads); ++i) {
+    threads.emplace_back([io_context] { io_context->run(); });
+  }
+
+  for (auto& thread : threads) {
+    thread.join();
   }
 
   LOG_INFO("DDNS Service End");
