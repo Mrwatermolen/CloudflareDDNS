@@ -8,10 +8,10 @@ add_executable(my_ddns
 target_link_libraries(my_ddns PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
+    swsc
 )
 
 target_include_directories(my_ddns PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_definitions(my_ddns PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT ASIO_STANDALONE)
 
 add_executable(test_client
     test.cpp
@@ -23,3 +23,5 @@ target_link_libraries(test_client PRIVATE
 )
 
 target_include_directories(test_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(test_client PRIVATE -DUSE_SWSCLIB)
+target_link_libraries(test_client PRIVATE swsc)
