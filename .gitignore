@@ -4,3 +4,4 @@ tmp/
 *.log
 *.json
 .DS_Store
+.vs
